@@ -4,7 +4,7 @@ This project implements a client-server application using the sockets API. The i
 
 ## Team Members
 
-- Name: [Your Name] (NetID: [Your NetID])
+- Name: Heon (NetID: [Your NetID])
 - Name: [Team Member 2] (NetID: [Team Member 2 NetID])
 - Name: [Team Member 3] (NetID: [Team Member 3 NetID])
 
