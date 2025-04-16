@@ -67,73 +67,102 @@ class SocketClient:
           client_socket.close()
 
   def stage_b(self, num, length, udp_port):
-    print(f"Starting Stage B... Sending {num} packets of length {length}")
+    print(f"Starting Stage B... Sending {num} packets with {length} zero bytes to port {udp_port}")
     
     # Create a UDP socket for Stage B
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    client_socket.settimeout(self.timeout)
     
-    # Keep track of which packets have been acknowledged
-    acked_packets = set()
-    
-    start_time = time.time()
-    
-    # Continue until all packets are acknowledged
-    while len(acked_packets) < num:
-        # Determine which packets need to be sent or resent
-        for packet_id in range(num):
-            if packet_id not in acked_packets:
-                # Create packet with packet_id as first 4 bytes of payload
-                packet_id_bytes = struct.pack("!I", packet_id)
-                # Add len bytes of zeros as the rest of the payload
-                zeros = b'\x00' * length
-                
-                # Complete payload
-                payload = packet_id_bytes + zeros
-                payload_len = len(payload)
-                
-                # Create packet header with secretA as psecret
-                header = self.create_header(payload_len, self.secrets['A'], 1)
-                
-                # Combine header and payload
-                packet = header + payload
-                
-                # Ensure 4-byte alignment (though it should already be aligned)
-                packet = self.pad_to_4_byte_boundary(packet)
-                print(f"Sending packet ID {packet_id} with packet length {len(packet)}")
-                # Send the packet
+    for packet_id in range(num):
+        # Set timeout for this packet's ACK
+        client_socket.settimeout(0.5)
+        
+        # Create the packet ID bytes
+        packet_id_bytes = struct.pack("!I", packet_id)
+        
+        # Create zeros payload exactly as length specifies
+        zeros = b'\x00' * length
+        
+        # Payload is packet_id followed by zeros
+        payload = packet_id_bytes + zeros
+        
+        # Create header with secretA, step=1, and correct payload length
+        header = self.create_header(len(payload), self.secrets['A'], 1)
+        
+        # Create complete packet
+        packet = header + payload
+        
+        # Ensure packet is padded to 4-byte boundary if needed
+        packet = self.pad_to_4_byte_boundary(packet)
+        
+        # Debug information
+        print(f"Packet {packet_id}: header={header.hex()}, payload_len={len(payload)}")
+        
+        # Send and retry until ACK received
+        acked = False
+        retries = 0
+        max_retries = 10
+        
+        while not acked and retries < max_retries:
+            try:
+                # Send packet
                 client_socket.sendto(packet, (self.server_name, udp_port))
-                print(f"Sent packet ID {packet_id} to {self.server_name}:{udp_port}")
-        
-        # Check for acknowledgements until timeout
-        try:
-            while True:
+                print(f"Sent packet {packet_id} to {self.server_name}:{udp_port}")
+                
+                # Wait for response
                 response, server_address = client_socket.recvfrom(1024)
-                print(f"Received response from server: {response}")
+                print(f"Received response: {response.hex()}")
                 
-                # First check if this is the final response (with TCP port and secretB)
-                if len(response) >= 20:  # Header (12) + two integers (8)
-                    response_payload = response[12:]
-                    if len(response_payload) == 8:
-                        tcp_port, secretB = struct.unpack("!II", response_payload)
-                        print(f"Received TCP port {tcp_port} and secretB {secretB} from server")
-                        self.secrets['B'] = secretB
-                        return tcp_port
+                # Skip header (12 bytes)
+                response_payload = response[12:]
                 
-                # Otherwise it should be an ACK
-                if len(response) >= 16:  # Header (12) + one integer (4)
-                    response_payload = response[12:]
+                # Check if it's an ACK (4 bytes)
+                if len(response_payload) == 4:
                     acked_id = struct.unpack("!I", response_payload)[0]
-                    acked_packets.add(acked_id)
-                    print(f"Received ACK for packet ID {acked_id} from server ({len(acked_packets)}/{num} acknowledged)")
+                    print(f"Received ACK for packet ID {acked_id}")
+                    
+                    if acked_id == packet_id:
+                        acked = True
+                        print(f"Successfully ACKed packet {packet_id}")
+                    else:
+                        print(f"Received ACK for packet {acked_id}, expecting {packet_id}")
+                
+                # Check if it's the final response (8 bytes)
+                elif len(response_payload) == 8:
+                    tcp_port, secretB = struct.unpack("!II", response_payload)
+                    print(f"Received TCP port {tcp_port} and secretB {secretB}")
+                    self.secrets['B'] = secretB
+                    return tcp_port
+                
+                else:
+                    print(f"Unexpected payload: {response_payload.hex()}")
+            
+            except socket.timeout:
+                retries += 1
+                print(f"Timeout waiting for ACK for packet {packet_id}, retry {retries}/{max_retries}")
         
-        except socket.timeout:
-            # If we time out waiting for ACKs, we'll retry the unacknowledged packets
-            print(f"Timeout waiting for ACKs. Retransmitting unacknowledged packets. {len(acked_packets)}/{num} received.")
-            time.sleep(self.retransmission_interval)
+        if not acked:
+            print(f"Failed to get ACK for packet {packet_id} after {max_retries} retries")
+            return None
     
-    # If we get here, all packets were acknowledged but we didn't get the final message
-    print("All packets acknowledged but didn't receive TCP port and secretB!")
+    # After all packets are sent and ACKed, wait for the final response
+    print("All packets ACKed, waiting for final response...")
+    client_socket.settimeout(3.0)  # Longer timeout for final response
+    
+    try:
+        response, server_address = client_socket.recvfrom(1024)
+        response_payload = response[12:]
+        
+        if len(response_payload) == 8:
+            tcp_port, secretB = struct.unpack("!II", response_payload)
+            print(f"Received TCP port {tcp_port} and secretB {secretB}")
+            self.secrets['B'] = secretB
+            return tcp_port
+        else:
+            print(f"Unexpected final response: {response_payload.hex()}")
+    
+    except socket.timeout:
+        print("Timeout waiting for final response")
+    
     return None
 
               
