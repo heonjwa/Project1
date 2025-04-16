@@ -144,16 +144,130 @@ class SocketClient:
         print("Timeout waiting for final response")
     
     return None
+  
+  def stage_c(self, tcp_port):
+    print(f"Starting Stage C... Connecting to TCP port {tcp_port}")
+    
+    try:
+        # Create a TCP socket that will be reused in stage D
+        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_socket.settimeout(self.timeout)
+        
+        self.tcp_socket.connect((self.server_name, tcp_port))
+        print(f"Connected to server on TCP port {tcp_port}")
+        
+        response = self.tcp_socket.recv(1024)
+        print(f"Received raw response: {response.hex()}")
 
-              
+        response_payload = response[12:]
+
+        if len(response_payload) < 13:
+            print(f"Unexpected response payload length: {len(response_payload)}")
+            return None
+        
+        num2, len2, secretC = struct.unpack("!III", response_payload[:12])
+        c = response_payload[12:13]
+        
+        print(f"Received from server: num2={num2}, len2={len2}, secretC={secretC}, c={c}")
+        self.secrets['C'] = secretC
+        
+        return num2, len2, c
+        
+    except socket.timeout:
+        print("Timeout occurred during Stage C")
+        self.tcp_socket.close()
+        return None
+    except Exception as e:
+        print(f"Error in Stage C: {e}")
+        if hasattr(self, 'tcp_socket'):
+            self.tcp_socket.close()
+        return None
+        
+  def stage_d(self, num2, len2, c, tcp_port):
+    print(f"Starting Stage D... Sending {num2} payloads, each with {len2} '{c}' characters over the existing TCP connection")
+    
+    try:
+        if not hasattr(self, 'tcp_socket'):
+            print("Error: No TCP connection available")
+            return None
+            
+        # Create a message with len2 repetitions of character c
+        message = c * len2
+        
+        # Send all packets in a loop
+        for i in range(num2):
+            # Create header with step=1 for Stage D (matching your friend's code)
+            header = self.create_header(len(message), self.secrets['C'], 1)
+            
+            packet = header + message
+            packet = self.pad_to_4_byte_boundary(packet)
+            
+            print(f"Sending payload {i+1}/{num2} with {len2} '{c}' characters")
+            self.tcp_socket.sendall(packet)
+            
+            # Optional short delay between packets
+            if i < num2 - 1:
+                time.sleep(0.1)
+        
+        # After sending all payloads, wait for the server's response
+        print("All payloads sent, waiting for final response...")
+        self.tcp_socket.settimeout(5.0)  # 5 seconds timeout
+        
+        response = self.tcp_socket.recv(1024)
+        print(f"Received final response: {response.hex()}")
+        
+        if len(response) >= 16:  # At least header (12) + secretD (4)
+            response_payload = response[12:]
+            
+            if len(response_payload) >= 4:
+                secretD = struct.unpack("!I", response_payload[:4])[0]
+                print(f"Received secretD: {secretD}")
+                self.secrets['D'] = secretD
+                return secretD
+        
+        print("Did not receive expected response")
+        return None
+        
+    except socket.timeout:
+        print("Timeout occurred during Stage D")
+        return None
+    except Exception as e:
+        print(f"Error in Stage D: {e}")
+        return None
+    finally:
+        self.tcp_socket.close()
+            
+    
+    
 
   def run(self):
     try:
+        # Stage A
         num, length, udp_port = self.stage_a()
+            
+        # Stage B
         tcp_port = self.stage_b(num, length, udp_port)
-    
+            
+        # Stage C
+        res_c = self.stage_c(tcp_port)
+        if res_c is None:
+            print("Stage C failed")
+            return False
+            
+        num2, len2, c = res_c
+        
+        # Stage D
+        self.stage_d(num2, len2, c, tcp_port)
+            
+        print("All stages completed successfully!")
+        print(f"Secrets: A={self.secrets['A']}, B={self.secrets['B']}, C={self.secrets['C']}, D={self.secrets['D']}")
+        
+        return True
+        
     except Exception as e:
         print(f"Error: {e}")
+        if hasattr(self, 'tcp_socket'):
+            self.tcp_socket.close()
         return False
     
         
@@ -165,8 +279,6 @@ def main():
     
     server_name = sys.argv[1]
     port = sys.argv[2]
-    
-    # Get last 3 digits of student ID (replace with your student ID)
     student_id_last_three_digits = "187"
     
     client = SocketClient(server_name, port, student_id_last_three_digits)
