@@ -3,84 +3,111 @@ import struct
 import sys
 import random
 import threading
+import logging
 
-class SocketServer:
-    def __init__(self, server_name, port, student_id_last_three_digits):
-        self.server_name = server_name
-        self.port = int(port)
-        self.student_id = int(student_id_last_three_digits)
-        self.secrets = {
-            'A': None,
-            'B': None,
-            'C': None,
-            'D': None
-        }
+TIMEOUT = 3
+STUDENT_ID = "056"  # Replace with your own
 
-    def create_header(self, payload_len, psecret, step):
-        return struct.pack("!IIHH", payload_len, psecret, step, self.student_id)
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 
-    def pad_to_4_byte_boundary(self, data):
-        padding_needed = (4 - (len(data) % 4)) % 4
-        return data + b'\x00' * padding_needed
+def pad_to_4_byte_boundary(data):
+    padding_needed = (4 - (len(data) % 4)) % 4
+    return data + b'\x00' * padding_needed
 
-    def handle_udp_client(self, data, client_addr, sock):
-        try:
-            # Strip off header: not used in stage A
-            payload = data[12:]
-            message = payload.decode('utf-8').rstrip('\x00')
+def create_header(payload_len, psecret, step):
+  return struct.pack("!IIHH", payload_len, psecret, step, int(STUDENT_ID))
 
-            if message != "hello world":
-                print(f"[REJECTED] Invalid message from {client_addr}: {message}")
-                return
-
-            print(f"[STAGE A] Valid message from {client_addr}: {message}")
-
-            # Generate values for Stage A
-            num = random.randint(5, 25)
-            length = random.randint(5, 50)
-            udp_port = random.randint(20000, 60000)
-            secret_a = random.randint(10000, 2**32 - 1)
-            self.secrets['A'] = secret_a
-
-            # Pack payload
-            payload = struct.pack("!IIII", num, length, udp_port, secret_a)
-            padded_payload = self.pad_to_4_byte_boundary(payload)
-
-            # Header (psecret = 0 for stage A, step = 1)
-            header = self.create_header(len(payload), 0, 1)
-            response = header + padded_payload
-
-            # Send response back to the client
-            sock.sendto(response, client_addr)
-            print(f"[STAGE A] Sent response to {client_addr}")
-            print(f"  num = {num}, len = {length}, udp_port = {udp_port}, secretA = {secret_a}")
-
-            # Optionally: open a new socket on udp_port for Stage B
-            # This can be implemented in stage_b()
-        except Exception as e:
-            print(f"[ERROR] Error handling client {client_addr}: {e}")
-
-    def stage_a(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind((self.server_name, self.port))
-        print(f"[SERVER] UDP socket bound to {self.server_name}:{self.port}")
-
-        while True:
-            try:
-                data, client_addr = sock.recvfrom(1024)
-                thread = threading.Thread(target=self.handle_udp_client, args=(data, client_addr, sock))
-                thread.start()
-            except socket.timeout:
-                print("[TIMEOUT] No client message received.")
-            except KeyboardInterrupt:
-                print("\n[SERVER] Shutting down.")
-                break
+class ClientHandler(threading.Thread):
+    def __init__(self, client_addr, secret_a, num, length, udp_port):
+        super().__init__()
+        self.client_addr = client_addr
+        self.secret_a = secret_a
+        self.num = num
+        self.length = length
+        self.udp_port = udp_port
+        self.tcp_port = random.randint(20000, 30000)
+        self.secretB = random.randint(1000, 9999)
+        self.secretC = random.randint(1000, 9999)
+        self.secretD = random.randint(1000, 9999)
 
     def run(self):
         try:
-            self.stage_a()
+            logging.info(f'Client {self.client_addr} | Stage B start on UDP {self.udp_port}')
+            self.handle_stage_b()
+
+            logging.info(f'Client {self.client_addr} | Stage C start on TCP {self.tcp_port}')
+            self.handle_stage_c()
+
+            logging.info(f'Client {self.client_addr} | Stage D start')
+            self.handle_stage_d()
+
+            logging.info(f'Client {self.client_addr} | Session complete!')
+
         except Exception as e:
-            print(f"[ERROR] {e}")
+            logging.warning(f'Client {self.client_addr} | Error: {e}')
+
+    def handle_stage_b(self):
+        # TODO: Create UDP socket on self.udp_port
+        # TODO: Receive self.num packets, verify IDs and len
+        # TODO: Send acks randomly, ensure 1+ is dropped
+        # TODO: Send self.tcp_port and self.secretB
+        pass
+
+    def handle_stage_c(self):
+        # TODO: Accept TCP connection on self.tcp_port
+        # TODO: Send num2, len2, secretC, c
+        pass
+
+    def handle_stage_d(self):
+        # TODO: Receive num2 payloads of char c
+        # TODO: Respond with secretD
+        pass
+
+def start_server(server_name, port):
+    logging.info(f'Starting server on UDP port {port}')
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_socket.bind((server_name, port))
+
+    while True:
+        try:
+            data, addr = udp_socket.recvfrom(1024)
+            udp_socket.settimeout(TIMEOUT)
+
+            # Probably wrong
+            payload = data[12:]
+            message = payload.decode('utf-8').rstrip('\x00')
+            if message != "hello world":
+                logging.warning(f"Invalid initial message from {addr}")
+                continue
+
+            # Generate parameters
+            num = random.randint(5, 25)
+            length = random.randint(5, 50)
+            udp_port = random.randint(1024, 65535)
+            secret_a = random.randint(10000000, 99999999)
+
+            logging.info(f'Client {addr} | Received hello world. Spawning handler...')
+
+            # Respond to client
+            payload = struct.pack('!IIII', num, length, udp_port, secret_a)
+            payload_len = len(payload)
+            padded_payload = pad_to_4_byte_boundary(payload)
+
+            header = create_header(payload_len, secret_a, 2)
+
+            packet = header + padded_payload
+
+            udp_socket.sendto(packet, addr)
+
+            # Start client handler thread
+            handler = ClientHandler(addr, secret_a, num, length, udp_port)
+            handler.start()
+
+        except socket.timeout:
+            logging.warning("Main server timed out waiting for packets.")
+        except Exception as e:
+            logging.error(f"Server error: {e}")
+            break
 
 def main():
     if len(sys.argv) != 3:
@@ -88,11 +115,8 @@ def main():
         sys.exit(1)
 
     server_name = sys.argv[1]
-    port = sys.argv[2]
-    student_id_last_three_digits = "056"  # Replace with your own
-
-    server = SocketServer(server_name, port, student_id_last_three_digits)
-    server.run()
+    port = int(sys.argv[2])
+    start_server(server_name, port)
 
 if __name__ == "__main__":
     main()
