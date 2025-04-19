@@ -17,8 +17,14 @@ def pad_to_4_byte_boundary(data):
 def create_header(payload_len, psecret, step):
   return struct.pack("!IIHH", payload_len, psecret, step, int(STUDENT_ID))
 
+def verify_header(p_secret, header):
+    payload_len, psecret, step, student_id = struct.unpack("!IIHH", header)
+    return psecret == p_secret and step == 1
+
+
+
 class ClientHandler(threading.Thread):
-    def __init__(self, client_addr, secret_a, num, length, udp_port):
+    def __init__(self, client_addr, secret_a, num, length, udp_port, server_name):
         super().__init__()
         self.client_addr = client_addr
         self.secret_a = secret_a
@@ -29,6 +35,7 @@ class ClientHandler(threading.Thread):
         self.secretB = random.randint(1000, 9999)
         self.secretC = random.randint(1000, 9999)
         self.secretD = random.randint(1000, 9999)
+        self.server_name = server_name
 
     def run(self):
         try:
@@ -48,7 +55,60 @@ class ClientHandler(threading.Thread):
 
     def handle_stage_b(self):
         # TODO: Create UDP socket on self.udp_port
-        # TODO: Receive self.num packets, verify IDs and len
+        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_socket.bind((self.server_name, self.udp_port))
+
+        curr_packet = 0
+        while curr_packet < self.num:
+            try:
+                data, addr = udp_socket.recvfrom(1024)
+                udp_socket.settimeout(TIMEOUT)
+                # TODO: Receive self.num packets, verify IDs and len
+                # Verify length = length + 4
+                if len(data) - 12 != self.length + 4:
+                    logging.warning(f"Invalid packet length from {addr}")
+                    curr_packet = 0
+                    continue
+                
+                # Verify header
+                if not verify_header(self.secret_a, data[:12]):
+                    logging.warning(f"Invalid header from {addr}")
+                    curr_packet = 0
+                    continue
+
+                payload = data[12:]
+                packet_num = struct.unpack("!I", payload[:4])[0]
+                if packet_num != curr_packet:
+                    logging.warning(f"Packet number mismatch: expected {curr_packet}, got {packet_num}")
+                    curr_packet = 0
+                    continue
+
+                rest_of_payload = payload[4:]
+                if rest_of_payload != bytes(len(rest_of_payload)):
+                    logging.warning(f"Non-zero data found in payload from {addr}")
+                    curr_packet = 0
+                    continue
+
+                rand_num = random.randint(0, 100)
+                if rand_num < 100:
+                    header = create_header(4, self.secret_a, 2)
+                    ack_payload = struct.pack("!I", curr_packet) 
+                    ack_packet = header + ack_payload
+                    udp_socket.sendto(ack_packet, self.client_addr)
+                    logging.info(f"Sent ACK for packet {curr_packet} to {self.client_addr}")
+
+            except socket.timeout:
+                logging.warning("Main server timed out waiting for packets.")
+                curr_packet = 0
+            except Exception as e:
+                logging.error(f"Server error: {e}")
+                break
+            
+        header = create_header(8, self.secret_b, 2)
+        ack_payload = struct.pack("!II", self.tcp_port, self.secretB)
+        ack_packet = header + ack_payload
+        ack_packet = pad_to_4_byte_boundary(ack_packet)
+        udp_socket.sendto(ack_packet, self.client_addr)
         # TODO: Send acks randomly, ensure 1+ is dropped
         # TODO: Send self.tcp_port and self.secretB
         pass
@@ -100,7 +160,7 @@ def start_server(server_name, port):
             udp_socket.sendto(packet, addr)
 
             # Start client handler thread
-            handler = ClientHandler(addr, secret_a, num, length, udp_port)
+            handler = ClientHandler(addr, secret_a, num, length, udp_port, server_name)
             handler.start()
 
         except socket.timeout:
