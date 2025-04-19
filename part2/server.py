@@ -17,9 +17,9 @@ def pad_to_4_byte_boundary(data):
 def create_header(payload_len, psecret, step):
   return struct.pack("!IIHH", payload_len, psecret, step, int(STUDENT_ID))
 
-def verify_header(p_secret, header):
+def verify_header(p_secret, header, length):         
     payload_len, psecret, step, student_id = struct.unpack("!IIHH", header)
-    return psecret == p_secret and step == 1
+    return psecret == p_secret and step == 1 and payload_len == length
 
 
 
@@ -65,13 +65,8 @@ class ClientHandler(threading.Thread):
                 udp_socket.settimeout(TIMEOUT)
                 # TODO: Receive self.num packets, verify IDs and len
                 # Verify length = length + 4
-                if len(data) - 12 != self.length + 4:
-                    logging.warning(f"Invalid packet length from {addr}")
-                    curr_packet = 0
-                    continue
-                
                 # Verify header
-                if not verify_header(self.secret_a, data[:12]):
+                if not verify_header(self.secret_a, data[:12], self.length + 4):
                     logging.warning(f"Invalid header from {addr}")
                     curr_packet = 0
                     continue
