@@ -22,7 +22,6 @@ def verify_header(p_secret, header, length):
     return psecret == p_secret and step == 1 and payload_len == length
 
 
-
 class ClientHandler(threading.Thread):
     def __init__(self, client_addr, secret_a, num, length, udp_port, server_name):
         super().__init__()
@@ -36,6 +35,7 @@ class ClientHandler(threading.Thread):
         self.secret_c = random.randint(1000, 9999)
         self.secret_d = random.randint(1000, 9999)
         self.server_name = server_name
+        self.tcp_socket = None
 
     def run(self):
         try:
@@ -45,8 +45,8 @@ class ClientHandler(threading.Thread):
             logging.info(f'Client {self.client_addr} | Stage C start on TCP {self.tcp_port}')
             self.handle_stage_c()
 
-            logging.info(f'Client {self.client_addr} | Stage D start')
-            self.handle_stage_d()
+            # logging.info(f'Client {self.client_addr} | Stage D start')
+            # self.handle_stage_d()
 
             logging.info(f'Client {self.client_addr} | Session complete!')
 
@@ -105,7 +105,7 @@ class ClientHandler(threading.Thread):
         ack_payload = struct.pack("!II", self.tcp_port, self.secret_b)
         ack_packet = header + ack_payload
         ack_packet = pad_to_4_byte_boundary(ack_packet)
-        udp_socket.sendto(ack_packet, self.client_addr)
+        udp_socket.sendto(ack_packet, addr)
         # TODO: Send acks randomly, ensure 1+ is dropped
         # TODO: Send self.tcp_port and self.secretB
         pass
@@ -113,12 +113,99 @@ class ClientHandler(threading.Thread):
     def handle_stage_c(self):
         # TODO: Accept TCP connection on self.tcp_port
         # TODO: Send num2, len2, secretC, c
-        pass
+        tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp_socket.bind(('0.0.0.0', self.tcp_port))
+        tcp_socket.listen(1)
+        tcp_socket.settimeout(TIMEOUT)
+        
+        try:
+            # Accept a connection from the client
+            conn, addr = tcp_socket.accept()
+            conn.settimeout(TIMEOUT)
+            logging.info(f'Client {addr} | TCP connection established')
+            
+            num2 = random.randint(5, 20)
+            len2 = random.randint(10, 100)
+            c = random.choice([b'A', b'B', b'C', b'D', b'E'])[0]
+            
+            
+            header = create_header(13, self.secret_b, 2) 
+            payload = struct.pack("!IIIc", num2, len2, self.secret_c, bytes([c]))
+            packet = header + payload
+            packet = pad_to_4_byte_boundary(packet)
+            
+            conn.sendall(packet)
+            logging.info(f'Client {addr} | Sent num2={num2}, len2={len2}, secretC={self.secret_c}, c={chr(c)}')
+            
+            self.num2 = num2
+            self.len2 = len2
+            self.c = c
+            self.tcp_conn = conn
+            self.tcp_addr = addr
 
-    def handle_stage_d(self):
-        # TODO: Receive num2 payloads of char c
-        # TODO: Respond with secretD
-        pass
+            for i in range(num2):
+                header = conn.recv(12)
+                if len(header) != 12:
+                    print(f"Invalid header length in payload {i+1}")
+                    conn.close()
+                    return False
+                
+                # TODO: Verify header
+                payload_len, psecret, step, student_id = struct.unpack("!IIHH", header)
+                
+                padded_len = payload_len + ((4 - (payload_len % 4)) % 4)
+                
+                payload = b''
+                bytes_received = 0
+                while bytes_received < padded_len:
+                    chunk = conn.recv(padded_len - bytes_received)
+                    if not chunk:
+                        print(f"Connection closed during payload {i+1}")
+                        conn.close()
+                        return False
+                    payload += chunk
+                    bytes_received += len(chunk)
+                
+                if len(payload) < payload_len:
+                    print(f"Payload {i+1} too short")
+                    conn.close()
+                    return False
+                
+                cutoff = padded_len - payload_len
+                num = padded_len - cutoff
+                payload = payload[:num]
+                char = chr(c)
+                expected_payload = char.encode() * len2
+                if payload != expected_payload:
+                    conn.close()
+                    return False
+                
+                print(f"Received valid payload {i+1}/{num2} from client")
+            
+            response_payload = struct.pack("!I", self.secret_d)
+            payload_len = len(response_payload)
+            
+            header = create_header(payload_len, self.secret_c, 2)
+            
+            packet = header + response_payload
+            
+            packet = pad_to_4_byte_boundary(packet)
+            
+            conn.sendall(packet)
+            print(f"Sent secretD {self.secret_d} to client")
+            conn.close()
+            
+            return True
+            
+        except socket.timeout:
+            print("Timeout in Stages C and D")
+            return False
+        except Exception as e:
+            print(f"Error in Stages C and D: {e}")
+            return False
+        finally:
+            if self.tcp_socket:
+                self.tcp_socket.close()
 
 def start_server(server_name, port):
     logging.info(f'Starting server on UDP port {port}')
