@@ -22,7 +22,7 @@ class SocketClient:
       return struct.pack("!IIHH", payload_len, psecret, step, self.student_id)
 
   def pad_to_4_byte_boundary(self, data):
-      padding_needed = (4 - (len(data) % 4))
+      padding_needed = (4 - (len(data) % 4)) % 4
       return data + b'\x00' * padding_needed
 
   def stage_a(self):
@@ -70,11 +70,11 @@ class SocketClient:
     print(f"Starting Stage B... Sending {num} packets with {length} zero bytes to port {udp_port}")
     
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    client_socket.settimeout(self.timeout)  # Set a reasonable timeout
     
+    # Send all packets
     for packet_id in range(num):
-        client_socket.settimeout(0.5)
         packet_id_bytes = struct.pack("!I", packet_id)
-
         zeros = b'\x00' * length
         
         payload = packet_id_bytes + zeros
@@ -82,9 +82,9 @@ class SocketClient:
         
         packet = header + payload
         packet = self.pad_to_4_byte_boundary(packet)
-
+        
         print(f"Packet {packet_id}: header={header.hex()}, payload_len={len(payload)}")
-
+        
         acked = False
         retries = 0
         max_retries = 10
@@ -93,13 +93,13 @@ class SocketClient:
             try:
                 client_socket.sendto(packet, (self.server_name, udp_port))
                 print(f"Sent packet {packet_id} to {self.server_name}:{udp_port}")
-
+                
                 response, server_address = client_socket.recvfrom(1024)
                 print(f"Received response: {response.hex()}")
-
-                response_payload = response[12:]
                 
-                if len(response_payload) == 4:
+                response_payload = response[12:]  # Skip header
+                
+                if len(response_payload) == 4:  # ACK packet
                     acked_id = struct.unpack("!I", response_payload)[0]
                     print(f"Received ACK for packet ID {acked_id}")
                     
@@ -108,15 +108,17 @@ class SocketClient:
                         print(f"Successfully ACKed packet {packet_id}")
                     else:
                         print(f"Received ACK for packet {acked_id}, expecting {packet_id}")
+                        retries += 1
                 
-                elif len(response_payload) == 8:
-                    tcp_port, secretB = struct.unpack("!II", response_payload)
+                elif len(response_payload) >= 8:  # TCP port and secretB
+                    tcp_port, secretB = struct.unpack("!II", response_payload[:8])
                     print(f"Received TCP port {tcp_port} and secretB {secretB}")
                     self.secrets['B'] = secretB
                     return tcp_port
                 
                 else:
                     print(f"Unexpected payload: {response_payload.hex()}")
+                    retries += 1
             
             except socket.timeout:
                 retries += 1
@@ -125,31 +127,41 @@ class SocketClient:
         if not acked:
             print(f"Failed to get ACK for packet {packet_id} after {max_retries} retries")
             return None
-
-    client_socket.settimeout(3.0)
     
-    try:
-        response, server_address = client_socket.recvfrom(1024)
-        response_payload = response[12:]
+    # After all packets are sent and ACKed, wait specifically for the TCP port info
+    print("All packets sent and ACKed, waiting for TCP port information...")
+    
+    # Set a longer timeout for the final response
+    client_socket.settimeout(5.0)
+    
+    # Try multiple times to receive the TCP port info
+    for _ in range(5):  # Try up to 5 times
+        try:
+            response, server_address = client_socket.recvfrom(1024)
+            response_payload = response[12:]  # Skip header
+            
+            if len(response_payload) >= 8:
+                tcp_port, secretB = struct.unpack("!II", response_payload[:8])
+                print(f"Received TCP port {tcp_port} and secretB {secretB}")
+                self.secrets['B'] = secretB
+                return tcp_port
+            else:
+                print(f"Unexpected final response: {response_payload.hex()}")
         
-        if len(response_payload) == 8:
-            tcp_port, secretB = struct.unpack("!II", response_payload)
-            print(f"Received TCP port {tcp_port} and secretB {secretB}")
-            self.secrets['B'] = secretB
-            return tcp_port
-        else:
-            print(f"Unexpected final response: {response_payload.hex()}")
+        except socket.timeout:
+            print("Timeout waiting for TCP port information, retrying...")
     
-    except socket.timeout:
-        print("Timeout waiting for final response")
-    
+    print("Failed to receive TCP port information")
     return None
   
   def stage_c(self, tcp_port):
+    if tcp_port is None:
+        print("Cannot proceed to Stage C: No TCP port received")
+        return None
+        
     print(f"Starting Stage C... Connecting to TCP port {tcp_port}")
     
     try:
-        # Create a TCP socket that will be reused in stage D
         self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_socket.settimeout(self.timeout)
         
@@ -157,64 +169,73 @@ class SocketClient:
         print(f"Connected to server on TCP port {tcp_port}")
         
         response = self.tcp_socket.recv(1024)
-        print(f"Received raw response: {response.hex()}")
-
-        response_payload = response[12:]
-
-        if len(response_payload) < 13:
-            print(f"Unexpected response payload length: {len(response_payload)}")
+        
+        if len(response) < 12:  # Minimum header length
+            print(f"Received invalid response length: {len(response)}")
+            self.tcp_socket.close()
+            self.tcp_socket = None
+            return None
+            
+        response_payload = response[12:]  # Skip header
+        
+        if len(response_payload) < 13:  # Must have at least num2, len2, secretC, and c
+            print(f"Received invalid payload length: {len(response_payload)}")
+            self.tcp_socket.close()
+            self.tcp_socket = None
             return None
         
         num2, len2, secretC = struct.unpack("!III", response_payload[:12])
         c = response_payload[12:13]
         
-        print(f"Received from server: num2={num2}, len2={len2}, secretC={secretC}, c={c}")
+        print(f"Received from server: num2={num2}, len2={len2}, secretC={secretC}, c={c!r}")
         self.secrets['C'] = secretC
         
         return num2, len2, c
         
-    except socket.timeout:
-        print("Timeout occurred during Stage C")
-        self.tcp_socket.close()
-        return None
     except Exception as e:
         print(f"Error in Stage C: {e}")
-        if hasattr(self, 'tcp_socket'):
+        if hasattr(self, 'tcp_socket') and self.tcp_socket:
             self.tcp_socket.close()
+            self.tcp_socket = None
         return None
         
   def stage_d(self, num2, len2, c, tcp_port):
-    print(f"Starting Stage D... Sending {num2} payloads, each with {len2} '{c}' characters over the existing TCP connection")
+    if None in [num2, len2, c, tcp_port]:
+        print("Cannot proceed to Stage D: Missing parameters")
+        return None
+        
+    print(f"Starting Stage D... Sending {num2} payloads, each with {len2} '{c!r}' characters over the existing TCP connection")
     
     try:
-        if not hasattr(self, 'tcp_socket'):
+        if not hasattr(self, 'tcp_socket') or self.tcp_socket is None:
             print("Error: No TCP connection available")
             return None
-            
-        # Create a message with len2 repetitions of character c
+        
+        # Make sure c is bytes
+        if isinstance(c, str):
+            c = c.encode()
+        
+        # Create the message with len2 repetitions of character c
         message = c * len2
         
-        # Send all packets in a loop
+        # Send all packets
         for i in range(num2):
-            # Create header with step=1 for Stage D (matching your friend's code)
             header = self.create_header(len(message), self.secrets['C'], 1)
-            
             packet = header + message
             packet = self.pad_to_4_byte_boundary(packet)
             
-            print(f"Sending payload {i+1}/{num2} with {len2} '{c}' characters")
+            print(f"Sending payload {i+1}/{num2} with {len2} '{c!r}' characters")
             self.tcp_socket.sendall(packet)
             
-            # Optional short delay between packets
+            # Add a small delay between packets to prevent overwhelming the server
             if i < num2 - 1:
-                time.sleep(0.1)
+                time.sleep(0.05)
         
-        # After sending all payloads, wait for the server's response
+        # After sending all payloads, wait for the final response
         print("All payloads sent, waiting for final response...")
-        self.tcp_socket.settimeout(5.0)  # 5 seconds timeout
+        self.tcp_socket.settimeout(5.0)  # Increase timeout for final response
         
         response = self.tcp_socket.recv(1024)
-        print(f"Received final response: {response.hex()}")
         
         if len(response) >= 16:  # At least header (12) + secretD (4)
             response_payload = response[12:]
@@ -224,21 +245,21 @@ class SocketClient:
                 print(f"Received secretD: {secretD}")
                 self.secrets['D'] = secretD
                 return secretD
+            else:
+                print(f"Invalid response payload length: {len(response_payload)}")
+        else:
+            print(f"Invalid response length: {len(response)}")
         
-        print("Did not receive expected response")
         return None
         
-    except socket.timeout:
-        print("Timeout occurred during Stage D")
-        return None
     except Exception as e:
         print(f"Error in Stage D: {e}")
         return None
     finally:
-        self.tcp_socket.close()
-            
-    
-    
+        if hasattr(self, 'tcp_socket') and self.tcp_socket:
+            self.tcp_socket.close()
+            self.tcp_socket = None
+
 
   def run(self):
     try:
