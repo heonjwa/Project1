@@ -218,6 +218,8 @@ def start_server(server_name, port):
             udp_socket.settimeout(TIMEOUT)
 
             # Probably wrong
+            if not verify_header(0, data[:12], 12):
+                return
             payload = data[12:]
             message = payload.decode('utf-8').rstrip('\x00')
             if message != "hello world":
