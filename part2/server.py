@@ -22,9 +22,7 @@ def verify_header(p_secret, header, length):
     return psecret == p_secret and step == 1 and payload_len == length
 
 def verify_padding(data, payload_len):
-    # Calculate expected padding
     expected_padding = (4 - (payload_len % 4)) % 4
-    # Expected total length: header (12 bytes) + payload + padding
     expected_length = 12 + payload_len + expected_padding
     return len(data) == expected_length
 
@@ -42,7 +40,6 @@ class ClientHandler(threading.Thread):
         self.secret_c = random.randint(1000, 9999)
         self.secret_d = random.randint(1000, 9999)
         self.server_name = server_name
-        self.tcp_socket = None
 
     def run(self):
         try:
@@ -70,35 +67,36 @@ class ClientHandler(threading.Thread):
                 data, addr = udp_socket.recvfrom(1024)
                 logging.info(f'Client {addr} | Stage B recv {data}')
                 
-                # Extract payload_len from header
                 if len(data) < 12:
                     logging.warning(f"Header too short from {addr}")
+                    udp_socket.close()
                     return False
                 
                 payload_len, psecret, step, student_id = struct.unpack("!IIHH", data[:12])
                 
-                # Verify padding
+    
                 if not verify_padding(data, payload_len):
                     logging.warning(f"Invalid padding from {addr}")
+                    udp_socket.close()
                     return False
                 
-                # Verify header
                 if not verify_header(self.secret_a, data[:12], self.length + 4):
                     logging.warning(f"Invalid header from {addr}")
+                    udp_socket.close()
                     return False
 
                 payload = data[12:]
                 packet_num = struct.unpack("!I", payload[:4])[0]
                 if packet_num != curr_packet:
                     logging.warning(f"Packet number mismatch: expected {curr_packet}, got {packet_num}")
-                    curr_packet = 0
-                    continue
+                    udp_socket.close()
+                    return False
 
                 rest_of_payload = payload[4:]
                 if rest_of_payload != bytes(len(rest_of_payload)):
                     logging.warning(f"Non-zero data found in payload from {addr}")
-                    curr_packet = 0
-                    continue
+                    udp_socket.close()
+                    return False
 
                 rand_num = random.randint(0, 100)
                 if rand_num < 100:
@@ -112,9 +110,10 @@ class ClientHandler(threading.Thread):
 
             except socket.timeout:
                 logging.warning("Main server timed out waiting for packets.")
+                udp_socket.close()
                 return False
             except Exception as e:
-                logging.error(f"Server error: {e}")
+                udp_socket.close()
                 return False
             
         # All packets received successfully
@@ -123,11 +122,12 @@ class ClientHandler(threading.Thread):
         ack_packet = header + ack_payload
         ack_packet = pad_to_4_byte_boundary(ack_packet)
         udp_socket.sendto(ack_packet, addr)
+        udp_socket.close()
         return True
 
     def handle_stage_c(self):
         tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        tcp_socket.bind(('0.0.0.0', self.tcp_port))
+        tcp_socket.bind((self.server_name, self.tcp_port))
         tcp_socket.listen(1)
         tcp_socket.settimeout(TIMEOUT)
         
@@ -232,10 +232,7 @@ class ClientHandler(threading.Thread):
             logging.error(f"Error in Stage C: {e}")
             return False
         finally:
-            if hasattr(self, 'tcp_socket') and self.tcp_socket:
-                self.tcp_socket.close()
-            if tcp_socket:
-                tcp_socket.close()
+            tcp_socket.close()
 
 
 def start_server(server_name, port):
