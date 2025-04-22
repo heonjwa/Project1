@@ -15,8 +15,8 @@ class SocketClient:
             'C': None,
             'D': None
         }
-        self.timeout = 3  # 3 seconds timeout for UDP
-        self.retransmission_interval = 0.5  # 0.5 seconds for retransmissions
+        self.timeout = 3
+        self.retransmission_interval = 0.5
 
   def create_header(self, payload_len, psecret, step):
       return struct.pack("!IIHH", payload_len, psecret, step, self.student_id)
@@ -41,21 +41,15 @@ class SocketClient:
       packet = self.pad_to_4_byte_boundary(packet)
       
       try:
-          # Send the packet to the server
           client_socket.sendto(packet, (self.server_name, self.port))
-          print(f"Sent 'hello world' to {self.server_name}:{self.port}")
           
-          # Receive response from server
           response, server_address = client_socket.recvfrom(1024)
           
-          # Parse the response (should be 4 integers: num, len, udp_port, secretA)
-          # Skip the 12-byte header (we don't need to parse it for the response)
           response_payload = response[12:]
           num, length, udp_port, secretA = struct.unpack("!IIII", response_payload)
           
           print(f"Received from server: num={num}, len={length}, udp_port={udp_port}, secretA={secretA}")
           
-          # Store secretA for later use
           self.secrets['A'] = secretA
           
           return num, length, udp_port
@@ -70,7 +64,7 @@ class SocketClient:
     print(f"Starting Stage B... Sending {num} packets with {length} zero bytes to port {udp_port}")
     
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    client_socket.settimeout(0.5)  # Set initial timeout once
+    client_socket.settimeout(0.5)
     
     for packet_id in range(num):
         packet_id_bytes = struct.pack("!I", packet_id)
@@ -82,8 +76,6 @@ class SocketClient:
         packet = header + payload
         packet = self.pad_to_4_byte_boundary(packet)
 
-        print(f"Packet {packet_id}: header={header.hex()}, payload_len={len(payload)}")
-
         acked = False
         retries = 0
         max_retries = 10
@@ -94,7 +86,6 @@ class SocketClient:
                 print(f"Sent packet {packet_id} to {self.server_name}:{udp_port}")
 
                 response, server_address = client_socket.recvfrom(1024)
-                print(f"Received response: {response.hex()}")
 
                 response_payload = response[12:]
                 
@@ -119,13 +110,11 @@ class SocketClient:
             
             except socket.timeout:
                 retries += 1
-                print(f"Timeout waiting for ACK for packet {packet_id}, retry {retries}/{max_retries}")
         
         if not acked:
             print(f"Failed to get ACK for packet {packet_id} after {max_retries} retries")
             return None
 
-    # After all packets are sent successfully, increase timeout for final response
     client_socket.settimeout(5.0)
     
     try:
@@ -149,7 +138,6 @@ class SocketClient:
     print(f"Starting Stage C... Connecting to TCP port {tcp_port}")
     
     try:
-        # Create a TCP socket that will be reused in stage D
         self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_socket.settimeout(self.timeout)
         
@@ -157,7 +145,6 @@ class SocketClient:
         print(f"Connected to server on TCP port {tcp_port}")
         
         response = self.tcp_socket.recv(1024)
-        print(f"Received raw response: {response.hex()}")
 
         response_payload = response[12:]
 
@@ -191,37 +178,29 @@ class SocketClient:
             print("Error: No TCP connection available")
             return None
             
-        # Create a message with len2 repetitions of character c
         message = c * len2
         
-        # Send all packets in a loop
         for i in range(num2):
-            # Create header with step=1 for Stage D (matching your friend's code)
             header = self.create_header(len(message), self.secrets['C'], 1)
             
             packet = header + message
             packet = self.pad_to_4_byte_boundary(packet)
             
-            print(f"Sending payload {i+1}/{num2} with {len2} '{c}' characters")
             self.tcp_socket.sendall(packet)
             
-            # Optional short delay between packets
             if i < num2 - 1:
                 time.sleep(0.1)
         
-        # After sending all payloads, wait for the server's response
-        print("All payloads sent, waiting for final response...")
-        self.tcp_socket.settimeout(5.0)  # 5 seconds timeout
+        self.tcp_socket.settimeout(5.0)
         
         response = self.tcp_socket.recv(1024)
         print(f"Received final response: {response.hex()}")
         
-        if len(response) >= 16:  # At least header (12) + secretD (4)
+        if len(response) >= 16:
             response_payload = response[12:]
             
             if len(response_payload) >= 4:
                 secretD = struct.unpack("!I", response_payload[:4])[0]
-                print(f"Received secretD: {secretD}")
                 self.secrets['D'] = secretD
                 return secretD
         
@@ -238,17 +217,13 @@ class SocketClient:
         self.tcp_socket.close()
             
     
-    
 
   def run(self):
     try:
-        # Stage A
         num, length, udp_port = self.stage_a()
             
-        # Stage B
         tcp_port = self.stage_b(num, length, udp_port)
             
-        # Stage C
         res_c = self.stage_c(tcp_port)
         if res_c is None:
             print("Stage C failed")
@@ -256,7 +231,6 @@ class SocketClient:
             
         num2, len2, c = res_c
         
-        # Stage D
         self.stage_d(num2, len2, c, tcp_port)
             
         print("All stages completed successfully!")
@@ -271,7 +245,6 @@ class SocketClient:
         return False
     
         
-
 def main():
     if len(sys.argv) != 3:
         print("Usage: python3 client.py <server_name> <port>")
