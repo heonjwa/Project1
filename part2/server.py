@@ -6,9 +6,7 @@ import threading
 import logging
 
 TIMEOUT = 3
-STUDENT_ID = "187"  # Replace with your own
-
-logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+STUDENT_ID = "187"
 
 def pad_to_4_byte_boundary(data):
     padding_needed = (4 - (len(data) % 4)) % 4
@@ -43,18 +41,14 @@ class ClientHandler(threading.Thread):
 
     def run(self):
         try:
-            logging.info(f'Client {self.client_addr} | Stage B start on UDP {self.udp_port}')
             if not self.handle_stage_b():
                 return
 
-            logging.info(f'Client {self.client_addr} | Stage C start on TCP {self.tcp_port}')
             if not self.handle_stage_c():
                 return
 
-            logging.info(f'Client {self.client_addr} | Session complete!')
-
         except Exception as e:
-            logging.warning(f'Client {self.client_addr} | Error: {e}')
+            print("Error")
 
     def handle_stage_b(self):
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -65,10 +59,8 @@ class ClientHandler(threading.Thread):
         while curr_packet < self.num:
             try:
                 data, addr = udp_socket.recvfrom(1024)
-                logging.info(f'Client {addr} | Stage B recv {data}')
                 
                 if len(data) < 12:
-                    logging.warning(f"Header too short from {addr}")
                     udp_socket.close()
                     return False
                 
@@ -76,25 +68,21 @@ class ClientHandler(threading.Thread):
                 
     
                 if not verify_padding(data, payload_len):
-                    logging.warning(f"Invalid padding from {addr}")
                     udp_socket.close()
                     return False
                 
                 if not verify_header(self.secret_a, data[:12], self.length + 4):
-                    logging.warning(f"Invalid header from {addr}")
                     udp_socket.close()
                     return False
 
                 payload = data[12:]
                 packet_num = struct.unpack("!I", payload[:4])[0]
                 if packet_num != curr_packet:
-                    logging.warning(f"Packet number mismatch: expected {curr_packet}, got {packet_num}")
                     udp_socket.close()
                     return False
 
                 rest_of_payload = payload[4:]
                 if rest_of_payload != bytes(len(rest_of_payload)):
-                    logging.warning(f"Non-zero data found in payload from {addr}")
                     udp_socket.close()
                     return False
 
@@ -105,18 +93,15 @@ class ClientHandler(threading.Thread):
                     ack_packet = header + ack_payload
                     ack_packet = pad_to_4_byte_boundary(ack_packet)
                     udp_socket.sendto(ack_packet, addr)
-                    logging.info(f"Sent ACK for packet {curr_packet}")
                     curr_packet += 1
 
             except socket.timeout:
-                logging.warning("Main server timed out waiting for packets.")
                 udp_socket.close()
                 return False
             except Exception as e:
                 udp_socket.close()
                 return False
             
-        # All packets received successfully
         header = create_header(8, self.secret_b, 2)
         ack_payload = struct.pack("!II", self.tcp_port, self.secret_b)
         ack_packet = header + ack_payload
@@ -132,10 +117,8 @@ class ClientHandler(threading.Thread):
         tcp_socket.settimeout(TIMEOUT)
         
         try:
-            # Accept a connection from the client
             conn, addr = tcp_socket.accept()
             conn.settimeout(TIMEOUT)
-            logging.info(f'Client {addr} | TCP connection established')
             
             num2 = random.randint(5, 20)
             len2 = random.randint(10, 100)
@@ -147,7 +130,6 @@ class ClientHandler(threading.Thread):
             packet = pad_to_4_byte_boundary(packet)
             
             conn.sendall(packet)
-            logging.info(f'Client {addr} | Sent num2={num2}, len2={len2}, secretC={self.secret_c}, c={chr(c)}')
             
             self.num2 = num2
             self.len2 = len2
@@ -158,7 +140,6 @@ class ClientHandler(threading.Thread):
             for i in range(num2):
                 header = conn.recv(12)
                 if len(header) != 12:
-                    logging.warning(f"Invalid header length in payload {i+1}")
                     conn.close()
                     return False
                 
@@ -167,7 +148,6 @@ class ClientHandler(threading.Thread):
                 
                 # Verify header values
                 if psecret != self.secret_c or step != 1:
-                    logging.warning(f"Invalid header values in payload {i+1}")
                     conn.close()
                     return False
                 
@@ -180,7 +160,6 @@ class ClientHandler(threading.Thread):
                 while bytes_received < padded_len:
                     chunk = conn.recv(padded_len - bytes_received)
                     if not chunk:
-                        logging.warning(f"Connection closed during payload {i+1}")
                         conn.close()
                         return False
                     payload += chunk
@@ -189,13 +168,11 @@ class ClientHandler(threading.Thread):
                 # Verify padding by checking payload length
                 full_packet = header + payload
                 if not verify_padding(full_packet, payload_len):
-                    logging.warning(f"Invalid padding in payload {i+1}")
                     conn.close()
                     return False
                 
                 # Verify payload length matches len2
                 if len(payload) < payload_len or payload_len != self.len2:
-                    logging.warning(f"Payload {i+1} has incorrect length")
                     conn.close()
                     return False
                 
@@ -203,11 +180,8 @@ class ClientHandler(threading.Thread):
                 actual_payload = payload[:payload_len]  # Exclude padding
                 expected_payload = bytes([self.c]) * self.len2
                 if actual_payload != expected_payload:
-                    logging.warning(f"Payload {i+1} has incorrect content")
                     conn.close()
                     return False
-                
-                logging.info(f"Received valid payload {i+1}/{num2} from client")
             
             # Send final response with secretD
             response_payload = struct.pack("!I", self.secret_d)
@@ -220,23 +194,21 @@ class ClientHandler(threading.Thread):
             packet = pad_to_4_byte_boundary(packet)
             
             conn.sendall(packet)
-            logging.info(f"Sent secretD {self.secret_d} to client")
             conn.close()
             
             return True
             
         except socket.timeout:
-            logging.warning("Timeout in Stage C")
+            print("Error")
             return False
         except Exception as e:
-            logging.error(f"Error in Stage C: {e}")
+            print("Error")
             return False
         finally:
             tcp_socket.close()
 
 
 def start_server(server_name, port):
-    logging.info(f'Starting server on UDP port {port}')
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_socket.bind((server_name, port))
     udp_socket.settimeout(TIMEOUT)
@@ -247,38 +219,26 @@ def start_server(server_name, port):
 
             # Check header length
             if len(data) < 12:
-                logging.warning(f"Invalid header length from {addr}")
                 continue
                 
-            # Extract payload_len from header
             payload_len, psecret, step, student_id = struct.unpack("!IIHH", data[:12])
             
-            # Verify padding
             if not verify_padding(data, payload_len):
-                logging.warning(f"Invalid padding from {addr}")
                 continue
                 
-            # Verify step and psecret
-            if step != 1 or psecret != 0:
-                logging.warning(f"Invalid header values from {addr}")
+            if step != 1 or psecret != 0:          
                 continue
 
-            # Verify payload
             payload = data[12:12+payload_len]
             message = payload.decode('utf-8').rstrip('\x00')
             if message != "hello world":
-                logging.warning(f"Invalid initial message from {addr}: {message}")
                 continue
 
-            # Generate parameters
             num = random.randint(5, 25)
             length = random.randint(5, 50)
             udp_port = random.randint(1024, 65535)
             secret_a = random.randint(10000000, 99999999)
 
-            logging.info(f'Client {addr} | Received hello world. Spawning handler...')
-
-            # Respond to client
             payload = struct.pack('!IIII', num, length, udp_port, secret_a)
             payload_len = len(payload)
             
@@ -289,15 +249,16 @@ def start_server(server_name, port):
 
             udp_socket.sendto(packet, addr)
 
-            # Start client handler thread
             handler = ClientHandler(addr, secret_a, num, length, udp_port, server_name)
             handler.start()
 
         except socket.timeout:
-            logging.warning("Main server timed out waiting for packets.")
-        except Exception as e:
-            logging.error(f"Server error: {e}")
+            print("Error")
             continue
+        except Exception as e:
+            print("Error")
+            udp_socket.close()
+            break
 
 def main():
     if len(sys.argv) != 3:
