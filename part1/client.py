@@ -70,11 +70,10 @@ class SocketClient:
     print(f"Starting Stage B... Sending {num} packets with {length} zero bytes to port {udp_port}")
     
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    client_socket.settimeout(0.5)  # Set initial timeout once
     
     for packet_id in range(num):
-        client_socket.settimeout(0.5)
         packet_id_bytes = struct.pack("!I", packet_id)
-
         zeros = b'\x00' * length
         
         payload = packet_id_bytes + zeros
@@ -126,7 +125,8 @@ class SocketClient:
             print(f"Failed to get ACK for packet {packet_id} after {max_retries} retries")
             return None
 
-    client_socket.settimeout(3.0)
+    # After all packets are sent successfully, increase timeout for final response
+    client_socket.settimeout(5.0)
     
     try:
         response, server_address = client_socket.recvfrom(1024)
